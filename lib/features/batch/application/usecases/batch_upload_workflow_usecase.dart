@@ -22,6 +22,7 @@ final class BatchUploadWorkflowUseCase {
 
   Future<Result<(), String>> call(List<LocalPoint> points, int userId, {
     void Function(int uploaded, int total)? onChunkUploaded,
+    bool skipCleanup = false,
   }) async {
 
     final List<LocalPoint> failedChunks = [];

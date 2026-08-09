@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:dawarich/core/data/repositories/local_point_repository_interfaces.dart';
+import 'package:dawarich/core/domain/models/point/local/local_point.dart';
 import 'package:dawarich/features/batch/application/usecases/batch_upload_workflow_usecase.dart';
 import 'package:dawarich/features/batch/application/usecases/get_current_batch_usecase.dart';
 import 'package:dawarich/features/tracking/application/usecases/get_batch_point_count_usecase.dart';
@@ -289,7 +290,8 @@ final class PointAutomationService {
   bool _settingsRequireRestart(TrackerSettings old, TrackerSettings current) {
     return old.trackingFrequency != current.trackingFrequency ||
            old.locationPrecision != current.locationPrecision ||
-           old.minimumPointDistance != current.minimumPointDistance;
+           old.minimumPointDistance != current.minimumPointDistance ||
+           old.statusUpdateInterval != current.statusUpdateInterval;
   }
 
   // ── Location stream ────────────────────────────────────────────────────
@@ -375,10 +377,13 @@ final class PointAutomationService {
     await startTracking(userId);
   }
 
-  // ── Location update handler (store only) ───────────────────────────────
+  // ── Location update handler ────────────────────────────────────────────
 
   /// Handles location updates from the stream.
-  /// Only stores the point locally. The reactive [_batchCountSub] stream
+  ///
+  /// Heartbeat points (isHeartbeat == true) are uploaded immediately,
+  /// bypassing the local batch pipeline.
+  /// Regular points are stored locally; the reactive [_batchCountSub] stream
   /// picks up the count change and triggers the upload when the threshold
   /// is met.
   Future<void> _handleLocationUpdate(Result<dynamic, String> result, int userId) async {
@@ -393,16 +398,25 @@ final class PointAutomationService {
 
     try {
       if (result case Ok(value: final point)) {
-        if (kDebugMode) {
-          debugPrint("[PointAutomation] Storing point from location stream");
-        }
+        if (point.properties.isHeartbeat) {
+          // Heartbeat: upload immediately, bypass batch pipeline
+          if (kDebugMode) {
+            debugPrint("[PointAutomation] Heartbeat point — uploading immediately");
+          }
+          await _uploadPointImmediately(point, userId);
+        } else {
+          // Regular point: store locally, batch upload handled reactively
+          if (kDebugMode) {
+            debugPrint("[PointAutomation] Storing point from location stream");
+          }
 
-        final storeResult = await _storePoint(point);
+          final storeResult = await _storePoint(point);
 
-        if (storeResult case Ok()) {
-          _lastPointTime = DateTime.now();
-        } else if (storeResult case Err(value: final err)) {
-          debugPrint("[PointAutomation] Failed to store point: $err");
+          if (storeResult case Ok()) {
+            _lastPointTime = DateTime.now();
+          } else if (storeResult case Err(value: final err)) {
+            debugPrint("[PointAutomation] Failed to store point: $err");
+          }
         }
       } else if (result case Err(value: final err)) {
         debugPrint("[PointAutomation] Point creation error: $err");
@@ -411,6 +425,30 @@ final class PointAutomationService {
       debugPrint("[PointAutomation] Error handling location update: $e\n$s");
     } finally {
       _writeBusy = false;
+    }
+  }
+
+  /// Uploads a single point directly to the server, bypassing the batch pipeline.
+  /// Uses [skipCleanup] to prevent deletion of other points waiting in the batch.
+  Future<void> _uploadPointImmediately(LocalPoint point, int userId) async {
+    if (_uploadBusy) return;
+    _uploadBusy = true;
+
+    try {
+      final result = await _batchUploadWorkflow([point], userId, skipCleanup: true);
+      if (result case Ok()) {
+        // Mark the point as uploaded so cleanup doesn't keep it as "last point"
+        await _localPointRepository.markBatchAsUploaded(userId, [point.id]);
+        if (kDebugMode) {
+          debugPrint("[PointAutomation] Heartbeat upload successful");
+        }
+      } else if (result case Err(value: final err)) {
+        debugPrint("[PointAutomation] Heartbeat upload failed: $err");
+      }
+    } catch (e, s) {
+      debugPrint("[PointAutomation] Heartbeat upload error: $e\n$s");
+    } finally {
+      _uploadBusy = false;
     }
   }
 }

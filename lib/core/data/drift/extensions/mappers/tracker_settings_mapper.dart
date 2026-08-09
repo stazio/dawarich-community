@@ -17,6 +17,8 @@ extension TrackerSettingsRowMapper on TrackerSettingsTableData {
       ),
       minimumPointDistance: minimumPointDistance ?? defaults.minimumPointDistance,
       pointsPerBatch: pointsPerBatch ?? defaults.pointsPerBatch,
+      batchExpirationMinutes: batchExpirationMinutes,
+      statusUpdateInterval: statusUpdateInterval ?? defaults.statusUpdateInterval,
       deviceId: deviceId ?? defaults.deviceId,
     );
   }
@@ -31,6 +33,8 @@ extension TrackerSettingsCompanionMapper on TrackerSettings {
       locationAccuracy: Value(locationPrecision.code),
       minimumPointDistance: Value(minimumPointDistance),
       pointsPerBatch: Value(pointsPerBatch),
+      batchExpirationMinutes: Value(batchExpirationMinutes),
+      statusUpdateInterval: Value(statusUpdateInterval),
       deviceId: Value(deviceId),
     );
   }
