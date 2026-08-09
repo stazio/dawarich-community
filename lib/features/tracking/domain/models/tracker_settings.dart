@@ -9,6 +9,7 @@ final class TrackerSettings {
   final int minimumPointDistance;
   final int pointsPerBatch;
   final int? batchExpirationMinutes;
+  final int statusUpdateInterval;
   final String deviceId;
 
   const TrackerSettings({
@@ -19,12 +20,16 @@ final class TrackerSettings {
     required this.minimumPointDistance,
     required this.pointsPerBatch,
     this.batchExpirationMinutes,
+    required this.statusUpdateInterval,
     required this.deviceId,
   });
 
   /// Whether batch expiration is enabled (non-null and > 0).
   bool get isBatchExpirationEnabled =>
       batchExpirationMinutes != null && batchExpirationMinutes! > 0;
+
+  /// Whether status update interval is enabled (> 0 seconds).
+  bool get isStatusUpdateEnabled => statusUpdateInterval > 0;
 
   TrackerSettings copyWith({
     bool? automaticTracking,
@@ -33,6 +38,7 @@ final class TrackerSettings {
     int? minimumPointDistance,
     int? pointsPerBatch,
     int? Function()? batchExpirationMinutes,
+    int? statusUpdateInterval,
     String? deviceId,
   }) {
     return TrackerSettings(
@@ -45,6 +51,7 @@ final class TrackerSettings {
       batchExpirationMinutes: batchExpirationMinutes != null
           ? batchExpirationMinutes()
           : this.batchExpirationMinutes,
+      statusUpdateInterval: statusUpdateInterval ?? this.statusUpdateInterval,
       deviceId: deviceId ?? this.deviceId,
     );
   }

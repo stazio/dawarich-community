@@ -19,8 +19,9 @@ final class PointValidator {
   Future<Result<(), String>> validatePoint(
       LocalPoint point,
       Option<LastPoint> lastPointOpt,
-      int userId,
-      ) async {
+      int userId, {
+      bool isHeartbeat = false,
+    }) async {
     final Future<bool> accurateF = _isPointAccurateEnough(point, userId);
 
     if (lastPointOpt case None()) {
@@ -53,7 +54,8 @@ final class PointValidator {
       return const Err("Point is not newer than the last stored point.");
     }
 
-    if (!isDistance) {
+    // Skip distance check for heartbeat/status-update points.
+    if (!isHeartbeat && !isDistance) {
       return const Err("Point is not sufficiently distant from the last point.");
     }
 

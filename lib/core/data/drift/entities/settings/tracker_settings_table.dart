@@ -10,6 +10,7 @@ class TrackerSettingsTable extends Table {
   IntColumn get minimumPointDistance => integer().nullable()();
   IntColumn get pointsPerBatch => integer().nullable()();
   IntColumn get batchExpirationMinutes => integer().nullable()();
+  IntColumn get statusUpdateInterval => integer().nullable()();
   TextColumn get deviceId => text().nullable()();
 
   IntColumn get userId => integer()();

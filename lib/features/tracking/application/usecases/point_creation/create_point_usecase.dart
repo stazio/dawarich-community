@@ -34,8 +34,14 @@ final class CreatePointUseCase {
   );
 
   /// Creates a full point using a position object.
+  ///
+  /// [isHeartbeat] marks the point as a heartbeat/status-update point.
+  /// This skips the distance validation check and marks the point for
+  /// immediate upload bypassing the local batch pipeline.
   Future<Result<LocalPoint, String>> call(
-      LocationFix position, DateTime timestamp, int userId) async {
+      LocationFix position, DateTime timestamp, int userId, {
+      bool isHeartbeat = false,
+    }) async {
 
     final PointContext context = await _getPointContext(userId);
 
@@ -44,10 +50,16 @@ final class CreatePointUseCase {
       context,
       userId,
       timestamp,
+      isHeartbeat: isHeartbeat,
     );
 
     final Option<LastPoint> lastPoint = await _getLastPointWithApiFallback(userId);
-    Result<(), String> validationResult = await _pointValidator.validatePoint(point, lastPoint, userId);
+    Result<(), String> validationResult = await _pointValidator.validatePoint(
+      point,
+      lastPoint,
+      userId,
+      isHeartbeat: isHeartbeat,
+    );
 
     if (validationResult case Err(value: String validationError)) {
       return Err("Point validation did not pass: $validationError");
@@ -107,7 +119,9 @@ final class CreatePointUseCase {
   }
 
   LocalPoint _constructPoint(
-      LocationFix fix, PointContext context, int userId, DateTime recordTimestamp) {
+      LocationFix fix, PointContext context, int userId, DateTime recordTimestamp, {
+      bool isHeartbeat = false,
+    }) {
     final geometry = LocalPointGeometry(
         type: "Point",
         longitude: fix.longitude,
@@ -129,6 +143,7 @@ final class CreatePointUseCase {
       courseAccuracy: fix.headingAccuracyDegrees,
       trackId: context.trackId,
       deviceId: context.deviceId,
+      isHeartbeat: isHeartbeat,
     );
 
     return LocalPoint(

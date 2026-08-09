@@ -13,6 +13,7 @@ class LocalPointProperties {
   final double courseAccuracy;
   final String? trackId;
   final String deviceId;
+  final bool isHeartbeat;
 
   LocalPointProperties({
     required this.batteryState,
@@ -29,5 +30,6 @@ class LocalPointProperties {
     required this.courseAccuracy,
     this.trackId,
     required this.deviceId,
+    this.isHeartbeat = false,
   });
 }

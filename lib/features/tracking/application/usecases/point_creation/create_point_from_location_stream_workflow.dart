@@ -42,7 +42,12 @@ final class CreatePointFromLocationStreamWorkflow {
     }
 
     if (isAutoMode) {
-      yield* _getAutoModePointStream(userId, precision, minimumDistance);
+      yield* _getAutoModePointStream(
+        userId,
+        precision,
+        minimumDistance,
+        settings.statusUpdateInterval,
+      );
     } else {
       yield* _getTimerPointStream(userId, precision, trackingFrequencySeconds);
     }
@@ -53,11 +58,12 @@ final class CreatePointFromLocationStreamWorkflow {
   }
 
   /// Auto mode: track when the device has moved a meaningful distance.
-  /// Uses user's minimum distance if set, otherwise derives from precision setting.
+  /// Also sends periodic heartbeat points when stationary (if [statusUpdateInterval] > 0).
   Stream<Result<LocalPoint, String>> _getAutoModePointStream(
     int userId,
     LocationPrecision precision,
     int minimumDistance,
+    int statusUpdateInterval,
   ) async* {
     // Hybrid approach:
     // - If user set a minimum distance, use that (they know what's meaningful to them)
@@ -84,55 +90,176 @@ final class CreatePointFromLocationStreamWorkflow {
 
     LocationFix? lastRecordedFix;
     bool isFirstPoint = true;
+    DateTime? lastPointTime;
+    Timer? heartbeatTimer;
+    StreamSubscription<LocationFix>? _locationSub;
+    final StreamController<Result<LocalPoint, String>> _pointController =
+        StreamController<Result<LocalPoint, String>>.broadcast();
+
+    /// Send a heartbeat point using the freshest available location fix.
+    /// Yields the point directly to the point controller.
+    Future<void> _sendHeartbeat(
+      int userId,
+      LocationPrecision precision,
+      LocationRequest request,
+    ) async {
+      // Check if we already sent a point recently to avoid duplicates.
+      // Cooldown is half the heartbeat interval to allow at most one missed
+      // heartbeat when the location stream fires just before a heartbeat.
+      final cooldownSeconds = statusUpdateInterval > 0 ? (statusUpdateInterval / 2).ceil() : 15;
+      if (lastPointTime != null &&
+          DateTime.now().difference(lastPointTime!).inSeconds < cooldownSeconds) {
+        return;
+      }
+
+      try {
+        // Try to get a fresh location fix
+        final result = await _locationProvider.getCurrent(request);
+
+        if (result case Ok(value: final fix)) {
+          final timestamp = DateTime.now().toUtc();
+          final pointResult =
+              await _createPointFromLocationFix(fix, timestamp, userId, isHeartbeat: true);
+
+          if (pointResult case Ok(value: final point)) {
+            lastPointTime = DateTime.now();
+            lastRecordedFix = fix;
+            if (kDebugMode) {
+              debugPrint('[LocationStream] Heartbeat point sent');
+            }
+            _pointController.add(Ok(point));
+          }
+        }
+      } catch (e, s) {
+        if (kDebugMode) {
+          debugPrint('[LocationStream] Heartbeat error: $e\n$s');
+        }
+      }
+    }
+
+    /// Start (or restart) the heartbeat timer.
+    /// Fires at [statusUpdateInterval] intervals to send a point even when stationary.
+    void startHeartbeat() {
+      heartbeatTimer?.cancel();
+      if (statusUpdateInterval <= 0) return;
+
+      heartbeatTimer = Timer.periodic(
+        Duration(seconds: statusUpdateInterval),
+        (_) async {
+          await _sendHeartbeat(userId, precision, request);
+        },
+      );
+
+      if (kDebugMode) {
+        debugPrint('[LocationStream] Heartbeat timer started (interval: ${statusUpdateInterval}s)');
+      }
+    }
+
+    /// Cancel the heartbeat timer and close the controller.
+    void stopHeartbeat() {
+      heartbeatTimer?.cancel();
+      heartbeatTimer = null;
+      _locationSub?.cancel();
+      _locationSub = null;
+      _pointController.close();
+    }
+
+    /// Process a location fix from the stream.
+    void _processLocationFix(
+      LocationFix fix,
+      int userId,
+      LocationPrecision precision,
+      LocationRequest request,
+      int distanceFilter,
+    ) {
+      if (isFirstPoint) {
+        isFirstPoint = false;
+        lastRecordedFix = fix;
+        lastPointTime = DateTime.now();
+
+        if (kDebugMode) {
+          debugPrint('[LocationStream] Auto: Recording initial location');
+        }
+
+        final timestamp = DateTime.now().toUtc();
+        final pointResult = _createPointFromLocationFix(fix, timestamp, userId);
+
+        pointResult.then((result) {
+          if (result case Ok(value: final point)) {
+            _pointController.add(Ok(point));
+          }
+        });
+
+        // Start heartbeat timer after first point
+        startHeartbeat();
+        return;
+      }
+
+      // Subsequent points are filtered
+      if (_shouldRecordPoint(lastRecordedFix, fix, distanceFilter)) {
+        if (kDebugMode) {
+          debugPrint('[LocationStream] Auto: Recording new location');
+        }
+
+        final timestamp = DateTime.now().toUtc();
+        final pointResult = _createPointFromLocationFix(fix, timestamp, userId);
+
+        pointResult.then((result) {
+          if (result case Ok(value: final point)) {
+            lastRecordedFix = fix;
+            lastPointTime = DateTime.now();
+            // Reset heartbeat timer on new point
+            startHeartbeat();
+            _pointController.add(Ok(point));
+          } else if (result case Err(value: final err)) {
+            if (kDebugMode) {
+              debugPrint('[LocationStream] Point creation failed: $err');
+            }
+          }
+        });
+      } else if (kDebugMode) {
+        debugPrint('[LocationStream] Auto: Skipping similar location');
+      }
+    }
 
     try {
       // Listen to location stream, first emission becomes the initial point
       final locationStream = _locationProvider.getLocationStream(request);
 
-      await for (final fix in locationStream) {
-        if (isFirstPoint) {
-          isFirstPoint = false;
-          lastRecordedFix = fix;
-
+      // Forward location fixes to the controller, store subscription for cleanup
+      _locationSub = locationStream.listen(
+        (fix) {
+          // Process location fix immediately
+          _processLocationFix(fix, userId, precision, request, distanceFilter);
+        },
+        onError: (e) {
           if (kDebugMode) {
-            debugPrint('[LocationStream] Auto: Recording initial location');
+            debugPrint('[LocationStream] Location stream error: $e');
           }
-
-          final timestamp = DateTime.now().toUtc();
-          final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
-
-          if (pointResult case Ok(value: final point)) {
-            yield Ok(point);
-          }
-          continue;
-        }
-
-        // Subsequent points are filtered
-        if (_shouldRecordPoint(lastRecordedFix, fix, distanceFilter)) {
+        },
+        onDone: () {
           if (kDebugMode) {
-            debugPrint('[LocationStream] Auto: Recording new location');
+            debugPrint('[LocationStream] Location stream ended naturally');
           }
+          _pointController.close();
+        },
+      );
 
-          final timestamp = DateTime.now().toUtc();
-          final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
+      // Start heartbeat timer after first point
+      // (will be started by _processLocationFix on first fix)
 
-          if (pointResult case Ok(value: final point)) {
-            lastRecordedFix = fix;
-            yield Ok(point);
-          } else if (pointResult case Err(value: final err)) {
-            if (kDebugMode) {
-              debugPrint('[LocationStream] Point creation failed: $err');
-            }
-          }
-        } else if (kDebugMode) {
-          debugPrint('[LocationStream] Auto: Skipping similar location');
-        }
+      // Yield all points (location + heartbeat) from the single controller
+      await for (final point in _pointController.stream) {
+        yield point;
       }
     } catch (e, s) {
+      stopHeartbeat();
       if (kDebugMode) {
         debugPrint('[LocationStream] Auto mode error: $e\n$s');
       }
       yield Err('Location stream error: $e');
+    } finally {
+      stopHeartbeat();
     }
   }
 

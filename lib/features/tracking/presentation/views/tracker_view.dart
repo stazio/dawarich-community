@@ -324,7 +324,7 @@ class _SettingsCard extends StatefulWidget {
 class _SettingsCardState extends State<_SettingsCard> {
   late PageController _pageController;
   int _currentPage = 0;
-  static const int _pageCount = 6;
+  static const int _pageCount = 7;
 
   @override
   void initState() {
@@ -387,6 +387,7 @@ class _SettingsCardState extends State<_SettingsCard> {
                 _FrequencyPage(),
                 _MinimumPointDistancePage(),
                 _BatchingPage(),
+                _StatusUpdatePage(),
                 _BatchExpirationPage(),
                 _AdvancedPage(),
                 _TrackRecordingPage(),
@@ -879,7 +880,102 @@ class _BatchingPageState extends State<_BatchingPage> {
   }
 }
 
-/// Page 5: Batch expiration (time-based upload trigger)
+/// Page 5: Status update interval (heartbeat when stationary)
+class _StatusUpdatePage extends StatelessWidget {
+  const _StatusUpdatePage();
+
+  static const _options = <int, String>{
+    0: 'Off',
+    10: '10s',
+    300: '5m',
+    600: '10m',
+    900: '15m',
+    1800: '30m',
+    3600: '1h',
+    7200: '2h',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<TrackerPageViewModel>();
+    final theme = Theme.of(context);
+    final current = vm.statusUpdateInterval;
+    final isEnabled = current > 0;
+
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: Icon(
+              isEnabled ? Icons.sync_problem : Icons.sync_disabled,
+              key: ValueKey(isEnabled),
+              size: 48,
+              color: isEnabled
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Status Update',
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            isEnabled
+                ? 'Send a point every ${_options[current] ?? '${current}s'} when stationary'
+                : 'Keep your server updated even when not moving',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: _options.entries.map((e) {
+              final isSelected = e.key == current;
+              return ChoiceChip(
+                label: Text(
+                  e.value,
+                  style: TextStyle(
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                    color: isSelected
+                        ? theme.colorScheme.onPrimary
+                        : theme.colorScheme.onSurface,
+                  ),
+                ),
+                selected: isSelected,
+                onSelected: (_) => vm.setStatusUpdateInterval(e.key),
+                selectedColor: theme.colorScheme.primary,
+                backgroundColor: theme.colorScheme.surfaceContainerLow,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: isSelected
+                        ? Colors.transparent
+                        : theme.colorScheme.outlineVariant,
+                  ),
+                ),
+                showCheckmark: false,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Page 6: Batch expiration (time-based upload trigger)
 class _BatchExpirationPage extends StatelessWidget {
   const _BatchExpirationPage();
 
