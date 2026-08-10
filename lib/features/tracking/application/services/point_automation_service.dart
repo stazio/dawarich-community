@@ -1,14 +1,19 @@
 import 'dart:async';
 import 'package:dawarich/core/data/repositories/local_point_repository_interfaces.dart';
+import 'package:dawarich/core/domain/models/point/local/local_point.dart';
 import 'package:dawarich/features/batch/application/usecases/batch_upload_workflow_usecase.dart';
 import 'package:dawarich/features/batch/application/usecases/get_current_batch_usecase.dart';
+import 'package:dawarich/features/tracking/application/repositories/location_provider_interface.dart';
 import 'package:dawarich/features/tracking/application/usecases/get_batch_point_count_usecase.dart';
 import 'package:dawarich/features/tracking/application/usecases/notifications/show_tracker_notification_usecase.dart';
 import 'package:dawarich/features/tracking/application/usecases/point_creation/create_point_from_location_stream_workflow.dart';
+import 'package:dawarich/features/tracking/application/usecases/point_creation/create_point_usecase.dart';
 import 'package:dawarich/features/tracking/application/usecases/point_creation/store_point_usecase.dart';
 import 'package:dawarich/features/tracking/application/usecases/settings/watch_tracker_settings_usecase.dart';
+import 'package:dawarich/features/tracking/domain/models/location_request.dart';
 import 'package:dawarich/features/tracking/domain/models/tracker_settings.dart';
 import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:option_result/option_result.dart';
 
 final class PointAutomationService {
@@ -22,7 +27,9 @@ final class PointAutomationService {
   TrackerSettings? _currentSettings;
   Timer? _expirationTimer;
   Timer? _heartbeatTimer;
+  Timer? _statusUpdateTimer;
   DateTime? _lastPointTime;
+  DateTime? _lastBatchUploadTime;
   int _lastKnownBatchCount = 0;
 
   /// Heartbeat interval for re-posting the notification so aggressive OEMs
@@ -38,6 +45,8 @@ final class PointAutomationService {
   final BatchUploadWorkflowUseCase _batchUploadWorkflow;
   final WatchTrackerSettingsUseCase _watchTrackerSettings;
   final IPointLocalRepository _localPointRepository;
+  final ILocationProvider _locationProvider;
+  final CreatePointUseCase _createPointUseCase;
 
   PointAutomationService(
     this._createPointFromLocationStream,
@@ -48,6 +57,8 @@ final class PointAutomationService {
     this._batchUploadWorkflow,
     this._watchTrackerSettings,
     this._localPointRepository,
+    this._locationProvider,
+    this._createPointUseCase,
   );
 
   /// Whether automatic tracking is currently active
@@ -63,6 +74,7 @@ final class PointAutomationService {
     _isTracking = true;
     _currentUserId = userId;
     _lastPointTime = null;
+    _lastBatchUploadTime = null;
 
     await _refreshNotification(userId);
 
@@ -71,6 +83,7 @@ final class PointAutomationService {
     _startLocationStream(userId);
     _startBatchCountWatch(userId);
     _syncExpirationTimer(userId);
+    _syncStatusUpdateTimer(userId);
   }
 
   // ── Heartbeat (OEM keep-alive) ─────────────────────────────────────────
@@ -120,6 +133,147 @@ final class PointAutomationService {
       );
     } catch (e, s) {
       debugPrint("[PointAutomation] Notification refresh error: $e\n$s");
+    }
+  }
+
+  // ── Status update timer (periodic batch flush) ─────────────────────────
+
+  /// Starts, restarts, or cancels the status update timer based on current
+  /// settings. When [statusUpdateInterval] > 0, fires periodically to flush
+  /// the batch (or send the current point if the batch is empty).
+  void _syncStatusUpdateTimer(int userId) {
+    _statusUpdateTimer?.cancel();
+    _statusUpdateTimer = null;
+
+    final settings = _currentSettings;
+    if (settings == null) {
+      if (kDebugMode) {
+        debugPrint('[PointAutomation] Status update timer: no settings, skipping');
+      }
+      return;
+    }
+    if (settings.statusUpdateInterval <= 0) {
+      if (kDebugMode) {
+        debugPrint('[PointAutomation] Status update timer off (disabled)');
+      }
+      return;
+    }
+
+    _statusUpdateTimer = Timer.periodic(
+      Duration(seconds: settings.statusUpdateInterval),
+      (_) => _flushBatchIfDue(userId),
+    );
+
+    if (kDebugMode) {
+      debugPrint(
+        '[PointAutomation] Status update timer started '
+        '(interval: ${settings.statusUpdateInterval}s)',
+      );
+    }
+  }
+
+  /// Called by the status update timer. Flushes the batch if enough time
+  /// has elapsed since the last upload, or sends the current point if
+  /// the batch is empty.
+  Future<void> _flushBatchIfDue(int userId) async {
+    final settings = _currentSettings;
+    if (settings == null || settings.statusUpdateInterval <= 0) return;
+
+    final now = DateTime.now();
+    final elapsed = _lastBatchUploadTime == null
+        ? null
+        : now.difference(_lastBatchUploadTime!).inSeconds;
+
+    if (kDebugMode) {
+      debugPrint(
+        '[PointAutomation] Status update timer fired: '
+        'elapsed=${elapsed ?? 0}s, threshold=${settings.statusUpdateInterval}s, '
+        'batchUploadTime=$_lastBatchUploadTime',
+      );
+    }
+
+    final shouldUpload = _lastBatchUploadTime == null ||
+        elapsed! >= settings.statusUpdateInterval;
+
+    if (!shouldUpload) {
+      if (kDebugMode) {
+        debugPrint('[PointAutomation] Status update: not due yet, skipping');
+      }
+      return;
+    }
+
+    await _flushBatch(userId);
+  }
+
+  /// Flushes the current batch. If the batch is empty, fetches the current
+  /// location and uploads it as a single-point batch.
+  Future<void> _flushBatch(int userId) async {
+    if (_uploadBusy) return;
+
+    try {
+      final batch = await _getCurrentBatch(userId);
+
+      if (batch.isNotEmpty) {
+        await _uploadCurrentBatch(userId);
+      } else {
+        // Batch is empty — fetch current location and upload it
+        if (kDebugMode) {
+          debugPrint('[PointAutomation] Batch empty, fetching current location for status update');
+        }
+        await _sendStatusUpdatePoint(userId);
+      }
+    } catch (e, s) {
+      debugPrint('[PointAutomation] Flush batch error: $e\n$s');
+    }
+  }
+
+  /// Fetches the current location, creates a point, and uploads it.
+  Future<void> _sendStatusUpdatePoint(int userId) async {
+    if (_uploadBusy) return;
+    _uploadBusy = true;
+
+    try {
+      final settings = _currentSettings;
+      if (settings == null) return;
+
+      final request = LocationRequest(
+        precision: settings.locationPrecision,
+        distanceFilterMeters: 0,
+        timeLimit: null,
+        intervalDuration: const Duration(seconds: 5),
+      );
+
+      final locationResult = await _locationProvider.getCurrent(request);
+
+      if (locationResult case Ok(value: final fix)) {
+        final timestamp = DateTime.now().toUtc();
+        final pointResult = await _createPointUseCase(fix, timestamp, userId, isHeartbeat: true);
+
+        if (pointResult case Ok(value: final point)) {
+          final storeResult = await _storePoint(point);
+          if (storeResult case Ok()) {
+            final uploadResult = await _batchUploadWorkflow([point], userId);
+            if (uploadResult case Ok()) {
+              _lastBatchUploadTime = DateTime.now();
+              if (kDebugMode) {
+                debugPrint('[PointAutomation] Status update point uploaded');
+              }
+            } else if (uploadResult case Err(value: final err)) {
+              debugPrint('[PointAutomation] Status update upload failed: $err');
+            }
+          } else if (storeResult case Err(value: final err)) {
+            debugPrint('[PointAutomation] Failed to store status update point: $err');
+          }
+        } else if (pointResult case Err(value: final err)) {
+          debugPrint('[PointAutomation] Failed to create status update point: $err');
+        }
+      } else if (locationResult case Err(value: final err)) {
+        debugPrint('[PointAutomation] Failed to get current location: $err');
+      }
+    } catch (e, s) {
+      debugPrint('[PointAutomation] Status update error: $e\n$s');
+    } finally {
+      _uploadBusy = false;
     }
   }
 
@@ -241,6 +395,7 @@ final class PointAutomationService {
 
       final result = await _batchUploadWorkflow(batch, userId);
       if (result case Ok()) {
+        _lastBatchUploadTime = DateTime.now();
         if (kDebugMode) {
           debugPrint('[PointAutomation] Batch upload successful.');
         }
@@ -278,6 +433,11 @@ final class PointAutomationService {
         // Re-sync the expiration timer if the expiration setting changed.
         if (old?.batchExpirationMinutes != settings.batchExpirationMinutes) {
           _syncExpirationTimer(userId);
+        }
+
+        // Re-sync the status update timer if the interval changed.
+        if (old?.statusUpdateInterval != settings.statusUpdateInterval) {
+          _syncStatusUpdateTimer(userId);
         }
       },
       onError: (e) {
@@ -349,9 +509,12 @@ final class PointAutomationService {
     _currentUserId = null;
     _currentSettings = null;
     _lastPointTime = null;
+    _lastBatchUploadTime = null;
     _lastKnownBatchCount = 0;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _statusUpdateTimer?.cancel();
+    _statusUpdateTimer = null;
     _expirationTimer?.cancel();
     _expirationTimer = null;
     await _batchCountSub?.cancel();
@@ -375,12 +538,13 @@ final class PointAutomationService {
     await startTracking(userId);
   }
 
-  // ── Location update handler (store only) ───────────────────────────────
+  // ── Location update handler ────────────────────────────────────────────
 
   /// Handles location updates from the stream.
-  /// Only stores the point locally. The reactive [_batchCountSub] stream
+  ///
+  /// All points are stored locally; the reactive [_batchCountSub] stream
   /// picks up the count change and triggers the upload when the threshold
-  /// is met.
+  /// is met. The [_statusUpdateTimer] handles periodic batch flushes.
   Future<void> _handleLocationUpdate(Result<dynamic, String> result, int userId) async {
     if (_writeBusy) {
       if (kDebugMode) {

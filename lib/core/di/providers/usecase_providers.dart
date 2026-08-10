@@ -264,6 +264,8 @@ final pointAutomationServiceProvider = FutureProvider<PointAutomationService>((r
   final getCurrentBatch = await ref.watch(getCurrentBatchUseCaseProvider.future);
   final batchUploadWorkflow = await ref.watch(batchUploadWorkflowUseCaseProvider.future);
   final localRepo = await ref.watch(pointLocalRepositoryProvider.future);
+  final locationProvider = ref.watch(locationProviderProvider);
+  final createPointUseCase = await ref.watch(createPointFromPositionUseCaseProvider.future);
 
   return PointAutomationService(
     createStream,
@@ -274,6 +276,8 @@ final pointAutomationServiceProvider = FutureProvider<PointAutomationService>((r
     batchUploadWorkflow,
     watchSettings,
     localRepo,
+    locationProvider,
+    createPointUseCase,
   );
 });
 
