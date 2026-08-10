@@ -31,6 +31,7 @@ final class DriftTrackerSettingsRepository implements ITrackerSettingsRepository
       locationPrecision: LocationPrecision.high,
       minimumPointDistance: 0,
       pointsPerBatch: 50,
+      statusUpdateInterval: 0,
       deviceId: deviceId,
     );
 
@@ -71,6 +72,7 @@ final class DriftTrackerSettingsRepository implements ITrackerSettingsRepository
       locationPrecision: LocationPrecision.high,
       minimumPointDistance: 0,
       pointsPerBatch: 50,
+      statusUpdateInterval: 0,
       deviceId: defaultDeviceId,
     );
 
@@ -113,6 +115,7 @@ final class DriftTrackerSettingsRepository implements ITrackerSettingsRepository
     minimumPointDistance: r.minimumPointDistance ?? defaults.minimumPointDistance,
     pointsPerBatch: r.pointsPerBatch ?? defaults.pointsPerBatch,
     batchExpirationMinutes: r.batchExpirationMinutes,
+    statusUpdateInterval: r.statusUpdateInterval ?? defaults.statusUpdateInterval,
     deviceId: r.deviceId ?? defaults.deviceId,
   );
 
@@ -125,6 +128,7 @@ final class DriftTrackerSettingsRepository implements ITrackerSettingsRepository
         minimumPointDistance: Value(s.minimumPointDistance),
         pointsPerBatch: Value(s.pointsPerBatch),
         batchExpirationMinutes: Value(s.batchExpirationMinutes),
+        statusUpdateInterval: Value(s.statusUpdateInterval),
         deviceId: Value(s.deviceId),
       );
 }

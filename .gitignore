@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+
+# Ignore all build_runner generated files
+*.g.dart
+*.gr.dart
+*.freezed.dart
+*.auto_mappr.dart

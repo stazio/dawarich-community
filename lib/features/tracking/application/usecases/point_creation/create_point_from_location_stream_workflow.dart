@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:dawarich/core/domain/models/point/local/local_point.dart';
 import 'package:dawarich/features/tracking/application/repositories/location_provider_interface.dart';
 import 'package:dawarich/features/tracking/application/usecases/point_creation/create_point_usecase.dart';
@@ -42,7 +43,11 @@ final class CreatePointFromLocationStreamWorkflow {
     }
 
     if (isAutoMode) {
-      yield* _getAutoModePointStream(userId, precision, minimumDistance);
+      yield* _getAutoModePointStream(
+        userId,
+        precision,
+        minimumDistance,
+      );
     } else {
       yield* _getTimerPointStream(userId, precision, trackingFrequencySeconds);
     }
@@ -53,15 +58,13 @@ final class CreatePointFromLocationStreamWorkflow {
   }
 
   /// Auto mode: track when the device has moved a meaningful distance.
-  /// Uses user's minimum distance if set, otherwise derives from precision setting.
   Stream<Result<LocalPoint, String>> _getAutoModePointStream(
     int userId,
     LocationPrecision precision,
     int minimumDistance,
   ) async* {
-    // Hybrid approach:
-    // - If user set a minimum distance, use that (they know what's meaningful to them)
-    // - Otherwise, derive from precision (reflects user's tracking mindset)
+    // If user set a minimum distance, use that (they know what's meaningful to them)
+    // Otherwise, derive from precision (reflects user's tracking mindset)
     final int distanceFilter = minimumDistance > 0
         ? minimumDistance
         : switch (precision) {
@@ -85,54 +88,35 @@ final class CreatePointFromLocationStreamWorkflow {
     LocationFix? lastRecordedFix;
     bool isFirstPoint = true;
 
-    try {
-      // Listen to location stream, first emission becomes the initial point
-      final locationStream = _locationProvider.getLocationStream(request);
+    final locationStream = _locationProvider.getLocationStream(request);
 
-      await for (final fix in locationStream) {
-        if (isFirstPoint) {
-          isFirstPoint = false;
-          lastRecordedFix = fix;
+    await for (final fix in locationStream) {
+      if (isFirstPoint) {
+        isFirstPoint = false;
+        lastRecordedFix = fix;
 
-          if (kDebugMode) {
-            debugPrint('[LocationStream] Auto: Recording initial location');
-          }
-
-          final timestamp = DateTime.now().toUtc();
-          final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
-
-          if (pointResult case Ok(value: final point)) {
-            yield Ok(point);
-          }
-          continue;
+        if (kDebugMode) {
+          debugPrint('[LocationStream] Auto: Recording initial location');
         }
 
-        // Subsequent points are filtered
-        if (_shouldRecordPoint(lastRecordedFix, fix, distanceFilter)) {
-          if (kDebugMode) {
-            debugPrint('[LocationStream] Auto: Recording new location');
-          }
+        final timestamp = DateTime.now().toUtc();
+        final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
+        yield pointResult;
+        continue;
+      }
 
-          final timestamp = DateTime.now().toUtc();
-          final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
-
-          if (pointResult case Ok(value: final point)) {
-            lastRecordedFix = fix;
-            yield Ok(point);
-          } else if (pointResult case Err(value: final err)) {
-            if (kDebugMode) {
-              debugPrint('[LocationStream] Point creation failed: $err');
-            }
-          }
-        } else if (kDebugMode) {
-          debugPrint('[LocationStream] Auto: Skipping similar location');
+      if (_shouldRecordPoint(lastRecordedFix, fix, distanceFilter)) {
+        if (kDebugMode) {
+          debugPrint('[LocationStream] Auto: Recording new location');
         }
+
+        lastRecordedFix = fix;
+        final timestamp = DateTime.now().toUtc();
+        final pointResult = await _createPointFromLocationFix(fix, timestamp, userId);
+        yield pointResult;
+      } else if (kDebugMode) {
+        debugPrint('[LocationStream] Auto: Skipping similar location');
       }
-    } catch (e, s) {
-      if (kDebugMode) {
-        debugPrint('[LocationStream] Auto mode error: $e\n$s');
-      }
-      yield Err('Location stream error: $e');
     }
   }
 

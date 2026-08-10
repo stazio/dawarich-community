@@ -203,6 +203,9 @@ final class TrackerPageViewModel extends ChangeNotifier with SafeChangeNotifier 
   int? _batchExpirationMinutes;
   int? get batchExpirationMinutes => _batchExpirationMinutes;
 
+  int _statusUpdateInterval = 0;
+  int get statusUpdateInterval => _statusUpdateInterval;
+
 
 
 
@@ -252,6 +255,7 @@ final class TrackerPageViewModel extends ChangeNotifier with SafeChangeNotifier 
     _locationAccuracy = s.locationPrecision;
     _minimumPointDistance = s.minimumPointDistance;
     _batchExpirationMinutes = s.batchExpirationMinutes;
+    _statusUpdateInterval = s.statusUpdateInterval;
     _deviceId = s.deviceId;
 
     safeNotifyListeners();
@@ -367,6 +371,20 @@ final class TrackerPageViewModel extends ChangeNotifier with SafeChangeNotifier 
 
     final updated = trackerSettingsCopy.copyWith(
       batchExpirationMinutes: () => minutes,
+    );
+
+    _applySettings(updated);
+    await _saveTrackerSettings(updated);
+  }
+
+  /// Sets the status update interval in seconds.
+  /// When enabled (> 0), a heartbeat point is sent periodically even when stationary.
+  Future<void> setStatusUpdateInterval(int seconds) async {
+    final trackerSettingsCopy = _trackerSettings;
+    if (trackerSettingsCopy == null) return;
+
+    final updated = trackerSettingsCopy.copyWith(
+      statusUpdateInterval: seconds,
     );
 
     _applySettings(updated);
